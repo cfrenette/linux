@@ -7608,53 +7608,6 @@ static int dm_encoder_helper_atomic_check(struct drm_encoder *encoder,
 					  struct drm_crtc_state *crtc_state,
 					  struct drm_connector_state *conn_state)
 {
-	struct drm_atomic_state *state = crtc_state->state;
-	struct drm_connector *connector = conn_state->connector;
-	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
-	struct dm_connector_state *dm_new_connector_state = to_dm_connector_state(conn_state);
-	const struct drm_display_mode *adjusted_mode = &crtc_state->adjusted_mode;
-	struct drm_dp_mst_topology_mgr *mst_mgr;
-	struct drm_dp_mst_port *mst_port;
-	struct drm_dp_mst_topology_state *mst_state;
-	enum dc_color_depth color_depth;
-	int clock, bpp = 0;
-	bool is_y420 = false;
-
-	if (!aconnector->mst_output_port)
-		return 0;
-
-	mst_port = aconnector->mst_output_port;
-	mst_mgr = &aconnector->mst_root->mst_mgr;
-
-	if (!crtc_state->connectors_changed && !crtc_state->mode_changed)
-		return 0;
-
-	mst_state = drm_atomic_get_mst_topology_state(state, mst_mgr);
-	if (IS_ERR(mst_state))
-		return PTR_ERR(mst_state);
-
-	mst_state->pbn_div.full = dfixed_const(dm_mst_get_pbn_divider(aconnector->mst_root->dc_link));
-
-	if (!state->duplicated) {
-		int max_bpc = conn_state->max_requested_bpc;
-
-		is_y420 = drm_mode_is_420_also(&connector->display_info, adjusted_mode) &&
-			  aconnector->force_yuv420_output;
-		color_depth = convert_color_depth_from_display_info(connector,
-								    is_y420,
-								    max_bpc);
-		bpp = convert_dc_color_depth_into_bpc(color_depth) * 3;
-		clock = adjusted_mode->clock;
-		dm_new_connector_state->pbn = drm_dp_calc_pbn_mode(clock, bpp << 4);
-	}
-
-	dm_new_connector_state->vcpi_slots =
-		drm_dp_atomic_find_time_slots(state, mst_mgr, mst_port,
-					      dm_new_connector_state->pbn);
-	if (dm_new_connector_state->vcpi_slots < 0) {
-		DRM_DEBUG_ATOMIC("failed finding vcpi slots: %d\n", (int)dm_new_connector_state->vcpi_slots);
-		return dm_new_connector_state->vcpi_slots;
-	}
 	return 0;
 }
 
@@ -11803,6 +11756,8 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 			goto fail;
 		}
 
+		compute_mst_native_bw(state, dm_state->context);
+
 #if defined(CONFIG_DRM_AMD_DC_FP)
 		if (dc_resource_is_dsc_encoding_supported(dc)) {
 			ret = compute_mst_dsc_configs_for_state(state, dm_state->context, vars);
@@ -11811,14 +11766,14 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 				ret = -EINVAL;
 				goto fail;
 			}
+
+			ret = dm_update_mst_vcpi_slots_for_dsc(state, dm_state->context, vars);
+			if (ret) {
+				drm_dbg_atomic(dev, "dm_update_mst_vcpi_slots_for_dsc() failed\n");
+				goto fail;
+			}
 		}
 #endif
-
-		ret = dm_update_mst_vcpi_slots_for_dsc(state, dm_state->context, vars);
-		if (ret) {
-			drm_dbg_atomic(dev, "dm_update_mst_vcpi_slots_for_dsc() failed\n");
-			goto fail;
-		}
 
 		/*
 		 * Perform validation of MST topology in the state:

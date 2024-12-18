@@ -93,4 +93,6 @@ enum dc_status dm_dp_mst_is_port_support_mode(
 	struct amdgpu_dm_connector *aconnector,
 	struct dc_stream_state *stream);
 
+void compute_mst_native_bw(struct drm_atomic_state *state, struct dc_state *dc_state);
+
 #endif

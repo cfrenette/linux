@@ -1400,6 +1400,65 @@ out:
 	return is_dsc_need_re_compute;
 }
 
+void compute_mst_native_bw(struct drm_atomic_state *state, struct dc_state *dc_state)
+{
+	int i;
+	struct dc_stream_state *stream;
+	struct amdgpu_dm_connector *aconnector;
+	struct drm_connector_state *new_conn_state;
+	struct dm_connector_state *dm_new_connector_state;
+	struct drm_dp_mst_topology_state *mst_state;
+	uint8_t encoding_format;
+	uint32_t stream_kbps;
+
+	for (i = 0; i < dc_state->stream_count; i++) {
+		stream = dc_state->streams[i];
+
+		if (stream->signal != SIGNAL_TYPE_DISPLAY_PORT_MST)
+			continue;
+
+		aconnector = (struct amdgpu_dm_connector *)stream->dm_stream_context;
+
+		DRM_DEBUG_DRIVER("%s: MST_DSC compute mst dsc configs for stream #%d - 0x%p, aconnector 0x%p\n",
+				__func__, i, stream, aconnector);
+
+		if (!aconnector || !aconnector->dc_sink || !aconnector->mst_output_port)
+			continue;
+
+		mst_state = drm_atomic_get_mst_topology_state(state, &aconnector->mst_root->mst_mgr);
+		if (IS_ERR(mst_state)) {
+			DRM_DEBUG_DRIVER("%s: MST_DSC no valid mst_state found in topology\n", __func__);
+			return;
+		}
+
+		mst_state->pbn_div.full = dfixed_const(dm_mst_get_pbn_divider(aconnector->mst_root->dc_link));
+
+		new_conn_state = drm_atomic_get_new_connector_state(state, &aconnector->base);
+
+		if (!new_conn_state) {
+			DRM_DEBUG_DRIVER("%s:%d MST_DSC Skip the stream 0x%p with invalid new_conn_state\n",
+					__func__, __LINE__, stream);
+			continue;
+		}
+
+		dm_new_connector_state = to_dm_connector_state(new_conn_state);
+
+		encoding_format = dc_link_get_highest_encoding_format(aconnector->dc_link);
+		stream_kbps = dc_bandwidth_in_kbps_from_timing(&stream->timing, encoding_format);
+
+		dm_new_connector_state->pbn = kbps_to_pbn(stream_kbps, false);
+
+		dm_new_connector_state->vcpi_slots =
+		drm_dp_atomic_find_time_slots(state,
+					      &aconnector->mst_root->mst_mgr,
+					      aconnector->mst_output_port,
+					      dm_new_connector_state->pbn);
+
+		DRM_DEBUG_DRIVER("%s: MST_DSC stream #%d, pbn = %llu, pbn_div = %u, slot_num = %d\n",
+				__func__, i, dm_new_connector_state->pbn, mst_state->pbn_div.full, dm_new_connector_state->vcpi_slots);
+	}
+}
+
 int compute_mst_dsc_configs_for_state(struct drm_atomic_state *state,
 				      struct dc_state *dc_state,
 				      struct dsc_mst_fairness_vars *vars)
